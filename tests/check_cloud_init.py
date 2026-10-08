@@ -11,7 +11,7 @@ tofu = sys.argv[1] if len(sys.argv) > 1 else "tofu"
 expression = 'jsonencode(yamldecode(templatefile("user-data.yaml.tpl", {lab_mac="fa:16:3e:00:00:01", lab_ip="10.77.0.11", team_users=[{username="ualice", password="SyntheticPassword123"}, {username="ubob", password="SyntheticPassword456"}]})))'
 result = subprocess.run(
     [tofu, f"-chdir={root / 'terraform'}", "console"],
-    input=expression + "\n", text=True, capture_output=True, check=True,
+    input=expression + "\n", text=True, capture_output=True, check=True, timeout=30,
 )
 config = json.loads(json.loads(result.stdout.strip()))
 assert config["ssh_pwauth"] is True

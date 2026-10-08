@@ -8,6 +8,7 @@ permissions:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     defaults:
       run:
         working-directory: terraform
@@ -16,6 +17,7 @@ jobs:
       - uses: opentofu/setup-opentofu@v1
         with:
           tofu_version: 1.13.1
+          tofu_wrapper: false
       - run: tofu fmt -check -recursive
       - run: tofu init -backend=false -input=false -lockfile=readonly
       - run: tofu validate
