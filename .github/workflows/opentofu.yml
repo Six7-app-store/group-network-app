@@ -1,0 +1,23 @@
+name: OpenTofu
+on:
+  push:
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: terraform
+    steps:
+      - uses: actions/checkout@v4
+      - uses: opentofu/setup-opentofu@v1
+        with:
+          tofu_version: 1.13.1
+      - run: tofu fmt -check -recursive
+      - run: tofu init -backend=false -input=false -lockfile=readonly
+      - run: tofu validate
+      - run: tofu test
+      - run: python3 ../tests/check_cloud_init.py
