@@ -134,10 +134,13 @@ run "invalid_disk_size" {
   variables { disk_size_gb = 5 }
   expect_failures = [var.disk_size_gb]
 }
-run "missing_network" {
+run "network_name_fallback" {
   command = plan
   variables { network_uuid = "" }
-  expect_failures = [openstack_compute_instance_v2.vm["alpha/1"], openstack_compute_instance_v2.vm["alpha/2"], openstack_compute_instance_v2.vm["beta/1"], openstack_compute_instance_v2.vm["beta/2"]]
+  assert {
+    condition     = length(data.openstack_networking_network_v2.access) == 1 && data.openstack_networking_network_v2.access[0].name == "DHBWv4"
+    error_message = "Omitted network UUID must resolve the configured network name."
+  }
 }
 run "empty_roster" {
   command = plan
