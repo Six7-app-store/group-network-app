@@ -3,8 +3,8 @@ variable "users" {
   type        = map(list(object({ email = string })))
   default     = {}
   validation {
-    condition     = alltrue([for team, members in var.users : length(members) > 0 && can(regex("^[A-Za-z0-9 _-]{1,48}$", team))])
-    error_message = "Groups require members and a name of 1-48 letters, digits, spaces, underscores or hyphens."
+    condition     = alltrue([for team in keys(var.users) : length(trimspace(team)) > 0])
+    error_message = "Group names must not be empty or whitespace-only. Display names may contain Unicode and punctuation; empty groups are allowed."
   }
   validation {
     condition = alltrue([for team, members in var.users :

@@ -1,4 +1,4 @@
-﻿# Gruppen-Netzwerk-App mit OpenTofu
+# Gruppen-Netzwerk-App mit OpenTofu
 
 Mehrere Ubuntu-VMs je Gruppe fuer Ping-/SSH-Uebungen. Deployment-Aufbau nach
 `Six7-app-store/Ubuntu-App`, aktueller Main-Stand `8990cfc` (Tag `v2.0.0`):
@@ -23,7 +23,11 @@ CIDR und Gateway werden daraus ausgelesen. Die nach dem Boot angehaengte IPv4-NI
 bekommt statische Adressierung und Quellrouting in Tabelle 100. Ihre Default-Route
 ersetzt nicht die primaere Route fuer Paketinstallation und IPv6-Zugang.
 
-Jede Gruppe erhaelt ein eigenes L2-Netz ohne Router zu anderen Gruppen.
+Jede belegte Gruppe erhaelt ein eigenes L2-Netz ohne Router zu anderen Gruppen.
+Gruppennamen duerfen Unicode, Sonderzeichen und laengere Anzeigenamen enthalten.
+Fuer Cloud-Ressourcen werden begrenzte ASCII-Namen mit Hash-Suffix abgeleitet;
+Roster-Schluessel und Anzeigenamen bleiben erhalten. Leere Gruppen werden
+mitgezaehlt, erzeugen aber keine VMs oder Netze.
 Standardmaessig entstehen zwei VMs (`vms_per_group`: 2-8), mit Lab-Adressen
 10.77.0.11/12 bzw. fd77:77::b/c. Die Praefixe duerfen nicht mit den Zugangsnetzen
 kollidieren. Getrennte Gruppen nutzen dieselben Praefixe in getrennten Netzen.

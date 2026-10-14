@@ -21,7 +21,13 @@ locals {
     var.ip_mode == "ipv4" ? var.network_v4_uuid : var.network_v6_uuid,
     var.network_uuid, "missing-network"
   )
-  teams = toset(keys(var.users))
+  # Platform rosters may include groups that have no members yet.
+  teams = toset([for team, members in var.users : team if length(members) > 0])
+  # Preserve display names and state keys; use bounded, collision-resistant
+  # ASCII names only for OpenStack resources.
+  team_resource_names = {
+    for team in local.teams : team => "${substr(trim(replace(lower(team), "/[^a-z0-9_-]+/", "-"), "-"), 0, 32)}-${substr(sha256(team), 0, 8)}"
+  }
   vms = merge({}, [for team in local.teams : {
     for index in range(var.vms_per_group) : "${team}/${index + 1}" => { team = team, index = index + 1 }
   }]...)
@@ -54,12 +60,12 @@ resource "random_password" "user_passwords" {
 # No router between the separate group networks.
 resource "openstack_networking_network_v2" "group" {
   for_each       = local.teams
-  name           = "${var.app_name}-${each.key}-lab"
+  name           = "${var.app_name}-${local.team_resource_names[each.key]}-lab"
   admin_state_up = true
 }
 resource "openstack_networking_subnet_v2" "group" {
   for_each    = local.ipv4 ? local.teams : toset([])
-  name        = "${var.app_name}-${each.key}-lab-v4"
+  name        = "${var.app_name}-${local.team_resource_names[each.key]}-lab-v4"
   network_id  = openstack_networking_network_v2.group[each.key].id
   cidr        = "10.77.0.0/24"
   ip_version  = 4
@@ -68,7 +74,7 @@ resource "openstack_networking_subnet_v2" "group" {
 }
 resource "openstack_networking_subnet_v2" "group_v6" {
   for_each    = local.ipv6 ? local.teams : toset([])
-  name        = "${var.app_name}-${each.key}-lab-v6"
+  name        = "${var.app_name}-${local.team_resource_names[each.key]}-lab-v6"
   network_id  = openstack_networking_network_v2.group[each.key].id
   cidr        = "fd77:77::/64"
   ip_version  = 6
@@ -77,7 +83,7 @@ resource "openstack_networking_subnet_v2" "group_v6" {
 }
 resource "openstack_networking_secgroup_v2" "group" {
   for_each             = local.teams
-  name                 = "${var.app_name}-${each.key}-lab"
+  name                 = "${var.app_name}-${local.team_resource_names[each.key]}-lab"
   description          = "Group-local SSH and ICMP only"
   delete_default_rules = true
 }
@@ -105,13 +111,13 @@ resource "openstack_networking_secgroup_rule_v2" "ndp" {
 }
 resource "openstack_networking_port_v2" "access" {
   for_each           = local.vms
-  name               = "${var.app_name}-${each.value.team}-${each.value.index}-access"
+  name               = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}-access"
   network_id         = local.primary_network_id
   security_group_ids = [var.shared_secgroup_id]
 }
 resource "openstack_networking_port_v2" "access_v4" {
   for_each           = local.dual ? local.vms : {}
-  name               = "${var.app_name}-${each.value.team}-${each.value.index}-access-v4"
+  name               = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}-access-v4"
   network_id         = var.network_v4_uuid
   security_group_ids = [var.shared_secgroup_id]
   fixed_ip {
@@ -130,7 +136,7 @@ data "openstack_networking_subnet_v2" "access_v4" {
 }
 resource "openstack_networking_port_v2" "lab" {
   for_each           = local.vms
-  name               = "${var.app_name}-${each.value.team}-${each.value.index}-lab"
+  name               = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}-lab"
   network_id         = openstack_networking_network_v2.group[each.value.team].id
   security_group_ids = [openstack_networking_secgroup_v2.group[each.value.team].id]
   dynamic "fixed_ip" {
@@ -150,7 +156,7 @@ resource "openstack_networking_port_v2" "lab" {
 }
 resource "openstack_compute_instance_v2" "vm" {
   for_each    = local.vms
-  name        = "${var.app_name}-${each.value.team}-${each.value.index}"
+  name        = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}"
   image_id    = var.disk_size_gb > 0 ? null : data.openstack_images_image_v2.image.id
   flavor_name = var.flavor
   dynamic "block_device" {
