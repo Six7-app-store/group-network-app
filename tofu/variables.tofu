@@ -15,21 +15,59 @@ variable "users" {
   }
 }
 variable "image_name" {
-  description = "Ubuntu image supplied by Worker @platform:internal"
+  description = "Ubuntu cloud image @openstack:image:name"
   type        = string
+  default     = "Ubuntu 24.04"
 }
 variable "network_uuid" {
-  description = "Access network in your project @openstack:network:id"
+  description = "Primary access network (legacy fallback) @openstack:network:id"
   type        = string
+  default     = ""
+}
+variable "ip_mode" {
+  description = "Adressfamilie: ipv4, ipv6 oder dual"
+  type        = string
+  default     = "ipv6"
+  validation {
+    condition     = contains(["ipv4", "ipv6", "dual"], var.ip_mode)
+    error_message = "ip_mode must be ipv4, ipv6 or dual."
+  }
+}
+variable "network_v4_uuid" {
+  description = "Routed IPv4 access network for ipv4/dual @openstack:network:id"
+  type        = string
+  default     = ""
+}
+variable "network_v6_uuid" {
+  description = "IPv6 access network for ipv6/dual @openstack:network:id"
+  type        = string
+  default     = ""
 }
 variable "shared_secgroup_id" {
   description = "Access security group allowing SSH from authorized clients @openstack:security_group:id"
   type        = string
 }
-variable "flavor_name" {
-  description = "VM size @openstack:flavor:name"
+variable "flavor" {
+  description = "VM size @openstack:flavor"
   type        = string
   default     = "gp1.small"
+  validation {
+    condition     = contains(["gp1.small", "gp1.medium", "gp1.large"], var.flavor)
+    error_message = "flavor must be gp1.small, gp1.medium or gp1.large."
+  }
+}
+variable "disk_size_gb" {
+  description = "System disk in GB (0 = flavor default)"
+  type        = number
+  default     = 0
+  validation {
+    condition     = var.disk_size_gb >= 0 && var.disk_size_gb <= 200
+    error_message = "disk_size_gb must be between 0 and 200."
+  }
+  validation {
+    condition     = (var.disk_size_gb == 0 || var.disk_size_gb >= 10) && floor(var.disk_size_gb) == var.disk_size_gb
+    error_message = "disk_size_gb must be 0 or an integer of at least 10."
+  }
 }
 variable "app_name" {
   description = "Resource name prefix"

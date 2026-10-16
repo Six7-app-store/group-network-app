@@ -1,99 +1,126 @@
-# Gruppen-Netzwerk-App mit OpenTofu
+﻿# Gruppen-Netzwerk-App mit OpenTofu
 
-Referenz-Template fuer die User Story: VMs einer Gruppe liegen im selben Netz;
-Ping und SSH zwischen den VMs sind moeglich.
+Mehrere Ubuntu-VMs je Gruppe fuer Ping-/SSH-Uebungen. Deployment-Aufbau nach
+`Six7-app-store/Ubuntu-App`, aktueller Main-Stand `8990cfc` (Tag `v2.0.0`):
+OpenTofu 1.13.1, OpenStack-Provider 3.4, Ubuntu 24.04 und Cloud-init ohne Packer.
+Der aktuelle AppStore-Worker erwartet `tofu/*.tofu` und lehnt `packer/` ab.
 
-## Architektur
+## Adressfamilien
 
-Standardmaessig zwei Ubuntu-VMs pro Gruppe (`vms_per_group`: 2 bis 8).
-Jede Gruppe erhaelt ein eigenes OpenStack-L2-Netz und IPv4-Subnetz.
-Alle Gruppen nutzen 10.77.0.0/24 in getrennten Netzen ohne Router.
-Die VMs haben die Uebungsadressen 10.77.0.11 bis 10.77.0.18.
-Eine zweite, vorhandene Zugangsschnittstelle dient dem Zugriff aus Campus/VPN.
-Security Groups erlauben im Uebungsnetz nur SSH (TCP 22) und ICMP zwischen
-Ports derselben Gruppe, fuer beide Richtungen. IPv6-Regeln sind vorbereitet;
-das Uebungsnetz selbst ist aktuell IPv4. Die Zugangsschnittstelle verwendet
-die vom Betreiber gewaehlte Security Group. Deren Regeln muessen separat den
-gewollten Zugang und die Isolation auf dem gemeinsamen Zugangsnetz sichern.
+`ip_mode` hat die validierten Werte `ipv4`, `ipv6` und `dual`; Standard `ipv6`.
 
-Cloud-init konfiguriert die Uebungsschnittstelle anhand ihrer MAC-Adresse,
-ohne Default-Route/DNS, und legt dieselben persoenlichen SSH-Konten auf allen
-VMs der Gruppe an. Konten haben kein sudo. Linux-Namen werden stabil aus der
-E-Mail gehasht; Passwortlogin bleibt erhalten. Der Output-Key verwendet den
-E-Mail-Lokalteil fuer den bestehenden Plattformvertrag. Kollisionen innerhalb
-einer Gruppe werden abgelehnt. Die Plattform zeigt weiterhin die erste VM;
-`team_vms.<gruppe>.vms` enthaelt die vollstaendige VM-Liste samt Lab-Adressen.
+| Modus | Zugangsnetze | Uebungsnetz je Gruppe | Zugangsausgabe |
+|---|---|---|---|
+| `ipv4` | `network_v4_uuid` | 10.77.0.0/24 | geroutete IPv4 |
+| `ipv6` | `network_v6_uuid` | fd77:77::/64 | IPv6, niemals private NAT-IPv4 |
+| `dual` | IPv6 primaer, separates IPv4-Netz | beide Subnetze im selben L2-Netz | IPv4 bevorzugt; IPv6 bleibt separat verfuegbar |
 
-## OpenTofu und Plattform
+`network_uuid` bleibt als Fallback fuer das primaere Zugangsnetz erhalten.
+Netz- und Security-Group-IDs haben keine fremden Projekt-Defaults. Sie muessen
+zum autorisierten OpenStack-Projekt gehoeren. Fuer `dual` muss das IPv4-Netz
+vom primaeren IPv6-Netz verschieden sein und genau ein IPv4-Subnetz besitzen;
+CIDR und Gateway werden daraus ausgelesen. Die nach dem Boot angehaengte IPv4-NIC
+bekommt statische Adressierung und Quellrouting in Tabelle 100. Ihre Default-Route
+ersetzt nicht die primaere Route fuer Paketinstallation und IPv6-Zugang.
 
-Getestet mit OpenTofu 1.13.1. `terraform/` und der HCL-Block `terraform {}`
-bleiben als kompatibles Konfigurationsformat erhalten. CI verwendet nur `tofu`,
-keine Terraform-Cloud-Tokens und keinen Cloud-Apply. Provider sind im
-committeten Lockfile fixiert. Packer baut ein Ubuntu-22.04-Image mit SSH/Ping.
-Packer ist ein separater Image-Build-Schritt und wird nicht durch OpenTofu ersetzt.
+Jede Gruppe erhaelt ein eigenes L2-Netz ohne Router zu anderen Gruppen.
+Standardmaessig entstehen zwei VMs (`vms_per_group`: 2-8), mit Lab-Adressen
+10.77.0.11/12 bzw. fd77:77::b/c. Die Praefixe duerfen nicht mit den Zugangsnetzen
+kollidieren. Getrennte Gruppen nutzen dieselben Praefixe in getrennten Netzen.
+Die Lab-NIC hat weder Default-Route noch DHCP/RA; OpenTofu reserviert ihre
+statischen Adressen auch im Neutron-Port. Ping/SSH ist nur innerhalb der
+Gruppen-Security-Group freigegeben. Zusaetzliche ICMPv6-Typen 135/136 erlauben
+Neighbour Discovery mit Link-Local-/Multicast-Adressen.
 
-Der vorhandene Plattform-Worker verwendet derzeit noch die Terraform-CLI.
-Diese Repositories sind fuer OpenTofu vorbereitet; eine Migration des Workers
-und seiner PostgreSQL-States ist ein separates Arbeitspaket. Keine produktiven
-States wurden umgestellt. Bestehende Deployments dieses alten Templates brauchen
-vor einem Versionswechsel einen State-/Planvergleich: Ressourcenadressen und
-VM-Anzahl haben sich geaendert. Neue Deployments verwenden einen neuen State.
+Die Zugangsschnittstellen verwenden `shared_secgroup_id`. Der Betreiber muss
+dort SSH und erforderliches ICMP/ICMPv6 fuer die jeweiligen Familien sowie die
+gewollte Isolation auf dem gemeinsamen Zugangsnetz sicherstellen. Ein isoliertes
+Lab-Netz isoliert nicht automatisch die zusaetzlichen Zugangsschnittstellen.
+Campus/VPN kann erforderlich sein; es wird kein Internetgateway erzeugt.
 
-## Lokal starten
+## Variablen und Zugangsdaten
 
-1. OpenTofu 1.13.1 und optional Packer installieren.
-2. OpenStack-Profil `openstack` in clouds.yaml konfigurieren, nicht committen.
-3. Fuer den optionalen Packer-Build Projekt-Netze und Security Groups explizit
-   setzen; die Vorlage enthaelt keine projektspezifischen UUID-Defaults.
-4. `terraform/terraform.tfvars` lokal anlegen, beispielsweise:
+| Variable | Standard / Zweck |
+|---|---|
+| `ip_mode` | `ipv6`; IPv4, IPv6 oder beide |
+| `network_v4_uuid`, `network_v6_uuid` | ausgewaehlte Projekt-Netze |
+| `network_uuid` | optionaler Fallback fuer das primaere Netz |
+| `shared_secgroup_id` | vorhandene Zugangs-Security-Group |
+| `image_name` | `Ubuntu 24.04` |
+| `flavor` | `gp1.small`, alternativ `gp1.medium` oder `gp1.large` |
+| `disk_size_gb` | `0` = Flavor-Standard; 10-200 = Cinder-Bootvolume je VM |
+| `vms_per_group` | `2`, ganze Zahl zwischen 2 und 8 |
+| `users` | Gruppen/Roster, vom Worker gesetzt |
+
+Cloud-init installiert SSH/Ping, richtet die Lab-NIC anhand ihrer MAC ein und
+legt persoenliche Konten ohne sudo auf allen VMs ihrer Gruppe an. Die
+Home-Verzeichnisse erhalten 0700. Kontonamen werden stabil aus der E-Mail
+gehasht; Output-Keys verwenden den Lokalteil fuer den bestehenden
+Plattformvertrag. Kollisionen innerhalb einer Gruppe werden abgelehnt.
+
+`user_accounts` zeigt auf die erste Gruppen-VM. `team_vms.<gruppe>` behaelt
+`fixed_ip` und ergaenzt `ip_mode`, `fixed_ip_v4`, `fixed_ip_v6` sowie die
+vollstaendige Liste `vms` mit Zugang und Lab-Adressen fuer beide Familien.
+Eine IPv6-Adresse bleibt im SSH-Hostfeld ungeklammert: `ssh user@2001:db8::10`.
+Bei einer URL oder Host:Port-Darstellung sind IPv6-Literale zu klammern.
+Passwoerter und State sind sensibel, nicht in Logs/CI-Artefakte kopieren.
+
+## Pruefen und Testdeployment
+
+```sh
+tofu -chdir=tofu init -backend=false -input=false -lockfile=readonly
+tofu -chdir=tofu fmt -check -recursive
+tofu -chdir=tofu validate
+tofu -chdir=tofu test
+python tests/check_cloud_init.py
+```
+
+CI fuehrt nur diese Pruefungen aus, ohne Cloud-Apply und ohne Cloud-Credentials.
+Die OpenTofu-Tests verwenden Mock-Provider und pruefen alle drei IP-Modi,
+Gruppentrennung, NICs, SSH/ICMP/Neighbour Discovery, Outputs, Bootvolumes und
+ungueltige Eingaben. Der Cloud-init-Test rendert alle drei Modi und prueft
+Netplan-Adressierung, Quellrouting, Konten und die endliche Wartezeit fuer
+Hotplug-NICs. Das ist kein Nachweis einer realen Cloud-Verbindung.
+
+Beispiel `tofu/terraform.tfvars` (lokal, nicht committen):
 
 ```hcl
-image_name         = "freigegebenes-ubuntu-image"
-network_uuid       = "UUID-des-Zugangsnetzes"
+ip_mode            = "dual"
+network_v4_uuid    = "UUID-des-gerouteten-IPv4-Netzes"
+network_v6_uuid    = "UUID-des-IPv6-Netzes"
 shared_secgroup_id = "UUID-der-Zugangs-Security-Group"
 users = {
   "Gruppe 1" = [{ email = "alice@example.test" }, { email = "bob@example.test" }]
   "Gruppe 2" = [{ email = "carol@example.test" }]
 }
-vms_per_group = 2
 ```
+
+Nur im autorisierten Testprojekt: OpenStack-Profil `openstack` konfigurieren,
+`tofu -chdir=tofu plan -out=lab.tfplan` pruefen und anwenden. Auf jeder VM
+`cloud-init status --wait` pruefen; Installation und NIC-Hotplug koennen dauern.
+Dann von VM 1 zu VM 2 (und zurueck):
 
 ```sh
-tofu -chdir=terraform init
-tofu -chdir=terraform fmt -check -recursive
-tofu -chdir=terraform validate
-tofu -chdir=terraform test
-# Nur im autorisierten Testprojekt:
-tofu -chdir=terraform plan -out=lab.tfplan
-tofu -chdir=terraform apply lab.tfplan
+# Je nach gewaehltem Modus:
+ping -4 -c 3 -W 2 10.77.0.12
+ping -6 -c 3 -W 2 fd77:77::c
+ssh -4 <eigener-linux-name>@10.77.0.12
+ssh -6 <eigener-linux-name>@fd77:77::c
 ```
 
-Projekt benoetigt Quota fuer Netze, Subnetze, Ports, Security Groups und VMs.
-Das Zugangsnetz darf nicht 10.77.0.0/24 verwenden, sonst entsteht ein
-Routingkonflikt. `user_accounts` und State enthalten Passwoerter und muessen
-zugriffsgeschuetzt behandelt werden. Keine Zugangsdaten in CI-Artefakte kopieren.
+Zusaetzlich persoenliche Home-Rechte, getrennte Gruppennetze und Zugriff ueber
+beide Zugangsnetze pruefen. Nach dem Test nur den zugehoerigen Test-State
+abbauen. Bootvolumes werden mit ihrer jeweiligen VM entfernt.
 
-## Akzeptanzpruefung im Testprojekt
+## Versionen und Migration
 
-Die Cloud-Pruefung ist bewusst manuell und wurde hier nicht ausgefuehrt.
+Der AppStore waehlt Git-Versionstags, keine Branches ohne Version. Neue
+freigegebene Stande muessen einen neuen Tag erhalten; vorhandene Tags bleiben
+unveraendert. Der Tag muss auf den geprueften Feature-Branch-Commit zeigen.
 
-1. Zwei Gruppen mit je zwei VMs provisionieren. Nach `cloud-init status --wait`
-   auf allen VMs die Netz-ID je Gruppe anhand `team_vms` pruefen.
-2. Auf VM 1 jeder Gruppe: `ping -c 3 -W 2 10.77.0.12`, danach
-   `ssh -o ConnectTimeout=10 <eigener-linux-name>@10.77.0.12`.
-   Mit dem eigenen Passwort anmelden und `hostname` pruefen.
-3. Auf VM 2 umgekehrt Ping/SSH nach 10.77.0.11 pruefen.
-4. Gegenseitige Benutzerzugriffe auf fremde persoenliche Home-Verzeichnisse
-   muessen abgelehnt werden. Die andere Gruppe besitzt ein getrenntes L2-Netz;
-   ihr identischer IP-Bereich bezeichnet keine fremden VMs.
-5. Zugriff auf fremde Gruppen ueber das gemeinsame Zugangsnetz separat gegen
-   die Betreiber-Security-Group pruefen. Das Lab-Netz allein isoliert diese NIC nicht.
-6. Nach dem Test nur den zugehoerigen neuen Test-State mit `tofu destroy` abbauen.
-
-`tofu test` nutzt ausschliesslich Mock-Provider. Es prueft Netzzuordnung,
-VM-Anzahl, getrennte Gruppen, NICs, ICMP/SSH-Regeln, Outputs, leeren Roster
-und ungueltige VM-Anzahlen. Es beweist keine reale Ping-/SSH-Verbindung.
-
-Das neue Repository `group-network-app` ist eine eigenstaendige Kopie dieses
-Referenz-Templates. Anpassungen an der Laufzeit gehoeren nach `packer/`;
-Gruppen-Netzwerk und Zugangsvertrag liegen unter `terraform/`.
+Gegenueber dem alten Stand wurden `terraform/` nach `tofu/`, `.tf` nach `.tofu`
+umgestellt und Packer entfernt. `flavor_name` wurde durch den aktuellen
+Ubuntu-Vertrag `flavor` ersetzt. Standard-Image und IP-Modus sind jetzt
+Ubuntu 24.04 / IPv6. Vor Aktualisierung vorhandener Deployments State sichern,
+Variablen explizit uebernehmen und Plan auf Ersatz-/Loeschaktionen pruefen.
+Es wurde keine bestehende VM und kein Cloud-State migriert.
