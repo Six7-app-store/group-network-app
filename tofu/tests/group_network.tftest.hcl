@@ -134,10 +134,13 @@ run "invalid_disk_size" {
   variables { disk_size_gb = 5 }
   expect_failures = [var.disk_size_gb]
 }
-run "missing_network" {
+run "network_name_fallback" {
   command = plan
   variables { network_uuid = "" }
-  expect_failures = [openstack_compute_instance_v2.vm["alpha/1"], openstack_compute_instance_v2.vm["alpha/2"], openstack_compute_instance_v2.vm["beta/1"], openstack_compute_instance_v2.vm["beta/2"]]
+  assert {
+    condition     = length(data.openstack_networking_network_v2.access) == 1 && data.openstack_networking_network_v2.access[0].name == "DHBWv4"
+    error_message = "Omitted network UUID must resolve the configured network name."
+  }
 }
 run "empty_roster" {
   command = plan
@@ -178,4 +181,49 @@ run "group_names_with_spaces" {
     condition     = length(openstack_compute_instance_v2.vm) == 2
     error_message = "Platform group names containing spaces must be supported."
   }
+}
+run "platform_group_roster" {
+  command = apply
+  variables {
+    users = {
+      "Team #1"              = [{ email = "alice@example.test" }]
+      "Übungsgruppe ②"       = [{ email = "bob@example.test" }]
+      "Noch nicht zugeteilt" = []
+    }
+  }
+  assert {
+    condition     = length(openstack_compute_instance_v2.vm) == 4 && length(openstack_networking_network_v2.group) == 2 && length(output.user_accounts) == 2
+    error_message = "Platform display names must deploy normally; empty groups must not allocate VMs."
+  }
+  assert {
+    condition     = contains(keys(output.team_vms), "Team #1") && contains(keys(output.team_vms), "Übungsgruppe ②") && !contains(keys(output.team_vms), "Noch nicht zugeteilt") && output.teams_summary["Noch nicht zugeteilt"] == 0
+    error_message = "Outputs must preserve platform display names and report empty groups accurately."
+  }
+  assert {
+    condition     = alltrue([for vm in openstack_compute_instance_v2.vm : can(regex("^[a-zA-Z0-9_-]+$", vm.name)) && length(vm.name) < 100])
+    error_message = "OpenStack resource names must be bounded ASCII names even for Unicode group names."
+  }
+}
+run "all_groups_empty" {
+  command = plan
+  variables { users = { "Team #1" = [], "Team #2" = [] } }
+  assert {
+    condition     = length(openstack_compute_instance_v2.vm) == 0 && length(openstack_networking_network_v2.group) == 0
+    error_message = "An empty platform roster must not allocate resources."
+  }
+}
+run "long_display_names" {
+  command = plan
+  variables {
+    users = { "Lehrveranstaltung Netzwerkkommunikation - Übungsgruppe Sommersemester" = [{ email = "alice@example.test" }] }
+  }
+  assert {
+    condition     = length(openstack_compute_instance_v2.vm) == 2 && alltrue([for vm in openstack_compute_instance_v2.vm : length(vm.name) < 100])
+    error_message = "Long display names must be accepted without exceeding resource name limits."
+  }
+}
+run "blank_display_name" {
+  command = plan
+  variables { users = { "   " = [{ email = "alice@example.test" }] } }
+  expect_failures = [var.users]
 }

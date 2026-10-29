@@ -3,8 +3,8 @@ variable "users" {
   type        = map(list(object({ email = string })))
   default     = {}
   validation {
-    condition     = alltrue([for team, members in var.users : length(members) > 0 && can(regex("^[A-Za-z0-9 _-]{1,48}$", team))])
-    error_message = "Groups require members and a name of 1-48 letters, digits, spaces, underscores or hyphens."
+    condition     = alltrue([for team in keys(var.users) : length(trimspace(team)) > 0])
+    error_message = "Group names must not be empty or whitespace-only. Display names may contain Unicode and punctuation; empty groups are allowed."
   }
   validation {
     condition = alltrue([for team, members in var.users :
@@ -43,9 +43,38 @@ variable "network_v6_uuid" {
   type        = string
   default     = ""
 }
-variable "shared_secgroup_id" {
-  description = "Access security group allowing SSH from authorized clients @openstack:security_group:id"
+variable "network_v4_name" {
+  description = "IPv4 access network name when no UUID is selected"
   type        = string
+  default     = "DHBWv4"
+}
+variable "network_v6_name" {
+  description = "IPv6 access network name when no UUID is selected"
+  type        = string
+  default     = "DHBWV6"
+}
+variable "shared_secgroup_id" {
+  description = "Optional existing access security group; empty creates an app-owned SSH group @openstack:security_group:id"
+  type        = string
+  default     = ""
+}
+variable "ssh_allowed_cidr_v4" {
+  description = "Allowed IPv4 client range for the automatic SSH security group"
+  type        = string
+  default     = "0.0.0.0/0"
+  validation {
+    condition     = can(cidrhost(var.ssh_allowed_cidr_v4, 0)) && !strcontains(var.ssh_allowed_cidr_v4, ":")
+    error_message = "ssh_allowed_cidr_v4 must be an IPv4 CIDR."
+  }
+}
+variable "ssh_allowed_cidr_v6" {
+  description = "Allowed IPv6 client range for the automatic SSH security group"
+  type        = string
+  default     = "::/0"
+  validation {
+    condition     = can(cidrhost(var.ssh_allowed_cidr_v6, 0)) && strcontains(var.ssh_allowed_cidr_v6, ":")
+    error_message = "ssh_allowed_cidr_v6 must be an IPv6 CIDR."
+  }
 }
 variable "flavor" {
   description = "VM size @openstack:flavor"

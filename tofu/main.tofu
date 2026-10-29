@@ -13,15 +13,22 @@ terraform {
 }
 provider "openstack" { cloud = "openstack" }
 locals {
-  ipv4       = var.ip_mode != "ipv6"
-  ipv6       = var.ip_mode != "ipv4"
-  dual       = var.ip_mode == "dual"
-  ethertypes = var.ip_mode == "dual" ? ["IPv4", "IPv6"] : (var.ip_mode == "ipv4" ? ["IPv4"] : ["IPv6"])
-  primary_network_id = coalesce(
-    var.ip_mode == "ipv4" ? var.network_v4_uuid : var.network_v6_uuid,
-    var.network_uuid, "missing-network"
-  )
-  teams = toset(keys(var.users))
+  ipv4                 = var.ip_mode != "ipv6"
+  ipv6                 = var.ip_mode != "ipv4"
+  dual                 = var.ip_mode == "dual"
+  ethertypes           = var.ip_mode == "dual" ? ["IPv4", "IPv6"] : (var.ip_mode == "ipv4" ? ["IPv4"] : ["IPv6"])
+  primary_network_uuid = (var.ip_mode == "ipv4" ? var.network_v4_uuid : var.network_v6_uuid) != "" ? (var.ip_mode == "ipv4" ? var.network_v4_uuid : var.network_v6_uuid) : var.network_uuid
+  primary_network_id   = local.primary_network_uuid != "" ? local.primary_network_uuid : try(data.openstack_networking_network_v2.access[0].id, "missing-network")
+  secondary_network_id = var.network_v4_uuid != "" ? var.network_v4_uuid : try(data.openstack_networking_network_v2.access_v4[0].id, "missing-network")
+  automatic_access_sg  = var.shared_secgroup_id == "" && length(local.teams) > 0
+  access_secgroup_ids  = var.shared_secgroup_id != "" ? [var.shared_secgroup_id] : [for sg in openstack_networking_secgroup_v2.access : sg.id]
+  # Platform rosters may include groups that have no members yet.
+  teams = toset([for team, members in var.users : team if length(members) > 0])
+  # Preserve display names and state keys; use bounded, collision-resistant
+  # ASCII names only for OpenStack resources.
+  team_resource_names = {
+    for team in local.teams : team => "${substr(trim(replace(lower(team), "/[^a-z0-9_-]+/", "-"), "-"), 0, 32)}-${substr(sha256(team), 0, 8)}"
+  }
   vms = merge({}, [for team in local.teams : {
     for index in range(var.vms_per_group) : "${team}/${index + 1}" => { team = team, index = index + 1 }
   }]...)
@@ -46,6 +53,52 @@ data "openstack_images_image_v2" "image" {
   name        = var.image_name
   most_recent = true
 }
+# Lookup runs inside the task's authenticated cloud/project visibility.
+# Operators may override with an explicit network UUID or another network name.
+data "openstack_networking_network_v2" "access" {
+  count = length(local.teams) > 0 && local.primary_network_uuid == "" ? 1 : 0
+  name  = var.ip_mode == "ipv4" ? var.network_v4_name : var.network_v6_name
+}
+data "openstack_networking_network_v2" "access_v4" {
+  count = local.dual && length(local.teams) > 0 && var.network_v4_uuid == "" ? 1 : 0
+  name  = var.network_v4_name
+}
+data "openstack_networking_network_v2" "access_v4_details" {
+  count      = local.dual && length(local.teams) > 0 ? 1 : 0
+  network_id = local.secondary_network_id
+}
+resource "openstack_networking_secgroup_v2" "access" {
+  count                = local.automatic_access_sg ? 1 : 0
+  name                 = "${var.app_name}-access"
+  description          = "App-owned SSH access (${var.ip_mode})"
+  delete_default_rules = true
+}
+resource "openstack_networking_secgroup_rule_v2" "access_ssh" {
+  for_each          = local.automatic_access_sg ? toset(local.ethertypes) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.access[0].id
+  direction         = "ingress"
+  ethertype         = each.key
+  protocol          = "tcp"
+  port_range_min    = 22
+  port_range_max    = 22
+  remote_ip_prefix  = each.key == "IPv4" ? var.ssh_allowed_cidr_v4 : var.ssh_allowed_cidr_v6
+}
+resource "openstack_networking_secgroup_rule_v2" "access_icmp" {
+  for_each          = local.automatic_access_sg ? toset(local.ethertypes) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.access[0].id
+  direction         = "ingress"
+  ethertype         = each.key
+  protocol          = each.key == "IPv4" ? "icmp" : "ipv6-icmp"
+  remote_ip_prefix  = each.key == "IPv4" ? var.ssh_allowed_cidr_v4 : "::/0"
+}
+resource "openstack_networking_secgroup_rule_v2" "access_egress" {
+  # IPv6 access networks may provide IPv4 NAT for apt/DNS as in Ubuntu-App.
+  for_each          = local.automatic_access_sg ? toset(["IPv4", "IPv6"]) : toset([])
+  security_group_id = openstack_networking_secgroup_v2.access[0].id
+  direction         = "egress"
+  ethertype         = each.key
+  remote_ip_prefix  = each.key == "IPv4" ? "0.0.0.0/0" : "::/0"
+}
 resource "random_password" "user_passwords" {
   for_each = local.users_map
   length   = 20
@@ -54,12 +107,12 @@ resource "random_password" "user_passwords" {
 # No router between the separate group networks.
 resource "openstack_networking_network_v2" "group" {
   for_each       = local.teams
-  name           = "${var.app_name}-${each.key}-lab"
+  name           = "${var.app_name}-${local.team_resource_names[each.key]}-lab"
   admin_state_up = true
 }
 resource "openstack_networking_subnet_v2" "group" {
   for_each    = local.ipv4 ? local.teams : toset([])
-  name        = "${var.app_name}-${each.key}-lab-v4"
+  name        = "${var.app_name}-${local.team_resource_names[each.key]}-lab-v4"
   network_id  = openstack_networking_network_v2.group[each.key].id
   cidr        = "10.77.0.0/24"
   ip_version  = 4
@@ -68,7 +121,7 @@ resource "openstack_networking_subnet_v2" "group" {
 }
 resource "openstack_networking_subnet_v2" "group_v6" {
   for_each    = local.ipv6 ? local.teams : toset([])
-  name        = "${var.app_name}-${each.key}-lab-v6"
+  name        = "${var.app_name}-${local.team_resource_names[each.key]}-lab-v6"
   network_id  = openstack_networking_network_v2.group[each.key].id
   cidr        = "fd77:77::/64"
   ip_version  = 6
@@ -77,7 +130,7 @@ resource "openstack_networking_subnet_v2" "group_v6" {
 }
 resource "openstack_networking_secgroup_v2" "group" {
   for_each             = local.teams
-  name                 = "${var.app_name}-${each.key}-lab"
+  name                 = "${var.app_name}-${local.team_resource_names[each.key]}-lab"
   description          = "Group-local SSH and ICMP only"
   delete_default_rules = true
 }
@@ -105,15 +158,15 @@ resource "openstack_networking_secgroup_rule_v2" "ndp" {
 }
 resource "openstack_networking_port_v2" "access" {
   for_each           = local.vms
-  name               = "${var.app_name}-${each.value.team}-${each.value.index}-access"
+  name               = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}-access"
   network_id         = local.primary_network_id
-  security_group_ids = [var.shared_secgroup_id]
+  security_group_ids = local.access_secgroup_ids
 }
 resource "openstack_networking_port_v2" "access_v4" {
   for_each           = local.dual ? local.vms : {}
-  name               = "${var.app_name}-${each.value.team}-${each.value.index}-access-v4"
-  network_id         = var.network_v4_uuid
-  security_group_ids = [var.shared_secgroup_id]
+  name               = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}-access-v4"
+  network_id         = local.secondary_network_id
+  security_group_ids = local.access_secgroup_ids
   fixed_ip {
     subnet_id = data.openstack_networking_subnet_v2.access_v4[0].id
   }
@@ -124,13 +177,13 @@ locals {
   }
 }
 data "openstack_networking_subnet_v2" "access_v4" {
-  count      = local.dual ? 1 : 0
-  network_id = var.network_v4_uuid
+  count      = local.dual && length(local.teams) > 0 ? 1 : 0
+  network_id = local.secondary_network_id
   ip_version = 4
 }
 resource "openstack_networking_port_v2" "lab" {
   for_each           = local.vms
-  name               = "${var.app_name}-${each.value.team}-${each.value.index}-lab"
+  name               = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}-lab"
   network_id         = openstack_networking_network_v2.group[each.value.team].id
   security_group_ids = [openstack_networking_secgroup_v2.group[each.value.team].id]
   dynamic "fixed_ip" {
@@ -150,7 +203,7 @@ resource "openstack_networking_port_v2" "lab" {
 }
 resource "openstack_compute_instance_v2" "vm" {
   for_each    = local.vms
-  name        = "${var.app_name}-${each.value.team}-${each.value.index}"
+  name        = "${var.app_name}-${local.team_resource_names[each.value.team]}-${each.value.index}"
   image_id    = var.disk_size_gb > 0 ? null : data.openstack_images_image_v2.image.id
   flavor_name = var.flavor
   dynamic "block_device" {
@@ -168,11 +221,13 @@ resource "openstack_compute_instance_v2" "vm" {
   network { port = openstack_networking_port_v2.lab[each.key].id }
   user_data = templatefile("${path.module}/user-data.yaml.tpl", {
     lab_mac = openstack_networking_port_v2.lab[each.key].mac_address
+    lab_mtu = coalesce(openstack_networking_network_v2.group[each.value.team].mtu, 0)
     lab_addresses = concat(
       local.ipv4 ? ["${cidrhost(openstack_networking_subnet_v2.group[each.value.team].cidr, each.value.index + 10)}/24"] : [],
       local.ipv6 ? ["${cidrhost(openstack_networking_subnet_v2.group_v6[each.value.team].cidr, each.value.index + 10)}/64"] : []
     )
     secondary_mac     = local.dual ? openstack_networking_port_v2.access_v4[each.key].mac_address : ""
+    secondary_mtu     = local.dual ? coalesce(data.openstack_networking_network_v2.access_v4_details[0].mtu, 0) : 0
     secondary_address = local.dual ? "${local.secondary_ipv4[each.key]}/${split("/", data.openstack_networking_subnet_v2.access_v4[0].cidr)[1]}" : ""
     secondary_cidr    = local.dual ? data.openstack_networking_subnet_v2.access_v4[0].cidr : ""
     secondary_gateway = local.dual ? coalesce(data.openstack_networking_subnet_v2.access_v4[0].gateway_ip, "none") : ""
@@ -182,15 +237,15 @@ resource "openstack_compute_instance_v2" "vm" {
     } if user.team == each.value.team]
   })
   metadata   = { team = each.value.team, app = var.app_name }
-  depends_on = [openstack_networking_secgroup_rule_v2.group, openstack_networking_secgroup_rule_v2.ndp]
+  depends_on = [openstack_networking_secgroup_rule_v2.group, openstack_networking_secgroup_rule_v2.ndp, openstack_networking_secgroup_rule_v2.access_ssh, openstack_networking_secgroup_rule_v2.access_icmp, openstack_networking_secgroup_rule_v2.access_egress]
   lifecycle {
     precondition {
       condition     = local.primary_network_id != "missing-network"
       error_message = "Set the access network for the selected ip_mode (or network_uuid)."
     }
     precondition {
-      condition     = !local.dual || (var.network_v4_uuid != "" && var.network_v4_uuid != local.primary_network_id)
-      error_message = "dual requires a separate routed network_v4_uuid alongside the IPv6 primary network."
+      condition     = !local.dual || (local.secondary_network_id != "missing-network" && local.secondary_network_id != local.primary_network_id)
+      error_message = "dual requires a separate routed IPv4 access network alongside the IPv6 primary network. Select UUIDs or unique network names."
     }
   }
   timeouts {
