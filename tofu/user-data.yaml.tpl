@@ -52,6 +52,8 @@ write_files:
           return next(iter(candidates), nic)
       lab = {'match': {'macaddress': '${lab_mac}'}, 'addresses': ${jsonencode(lab_addresses)},
              'dhcp4': False, 'dhcp6': False, 'accept-ra': False}
+      if ${lab_mtu} > 0:
+          lab['mtu'] = ${lab_mtu}
       ethernets = {interface_id('${lab_mac}'): lab}
 %{ if secondary_mac != "" ~}
       secondary = {'match': {'macaddress': '${secondary_mac}'},
@@ -59,6 +61,8 @@ write_files:
                    'dhcp4': False, 'dhcp6': False, 'accept-ra': False,
                    'routes': [{'to': '${secondary_cidr}', 'scope': 'link', 'table': 100}],
                    'routing-policy': [{'from': '${split("/", secondary_address)[0]}/32', 'table': 100, 'priority': 100}]}
+      if ${secondary_mtu} > 0:
+          secondary['mtu'] = ${secondary_mtu}
 %{ if secondary_gateway != "none" ~}
       secondary['routes'].append({'to': '0.0.0.0/0', 'via': '${secondary_gateway}', 'table': 100})
 %{ endif ~}

@@ -34,9 +34,10 @@ class FakePath:
 for mode in ["ipv4", "ipv6", "dual"]:
     addresses = (["10.77.0.11/24"] if mode != "ipv6" else []) + (["fd77:77::b/64"] if mode != "ipv4" else [])
     args = dict(
-        lab_mac="fa:16:3e:00:00:01", lab_addresses=addresses,
+        lab_mac="fa:16:3e:00:00:01", lab_addresses=addresses, lab_mtu=1450,
         secondary_mac="fa:16:3e:00:00:03" if mode == "dual" else "",
         secondary_address="198.51.100.10/24", secondary_cidr="198.51.100.0/24",
+        secondary_mtu=1450,
         secondary_gateway="198.51.100.1",
         team_users=[dict(username="ualice", password="SyntheticPassword123"), dict(username="ubob", password="SyntheticPassword456")],
     )
@@ -67,12 +68,14 @@ for mode in ["ipv4", "ipv6", "dual"]:
         exec(compile(script["content"], script["path"], "exec"), {})
     ethernets = written["/etc/netplan/99-group-lab.yaml"]["network"]["ethernets"]
     assert ethernets["generated-lab"]["addresses"] == addresses
+    assert ethernets["generated-lab"]["mtu"] == 1450
     assert not ethernets["generated-lab"]["dhcp4"] and not ethernets["generated-lab"]["accept-ra"]
     assert "routes" not in ethernets["generated-lab"]
     assert netplan["network"]["ethernets"]["access"]["dhcp4"] is True
     if mode == "dual":
         secondary = ethernets["ens5"]
         assert secondary["addresses"] == ["198.51.100.10/24"]
+        assert secondary["mtu"] == 1450
         assert secondary["routing-policy"] == [{"from": "198.51.100.10/32", "table": 100, "priority": 100}]
         assert all(route["table"] == 100 for route in secondary["routes"])
         assert secondary["routes"][1] == {"to": "0.0.0.0/0", "via": "198.51.100.1", "table": 100}

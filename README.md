@@ -15,12 +15,17 @@ Der aktuelle AppStore-Worker erwartet `tofu/*.tofu` und lehnt `packer/` ab.
 | `ipv6` | `network_v6_uuid` | fd77:77::/64 | IPv6, niemals private NAT-IPv4 |
 | `dual` | IPv6 primaer, separates IPv4-Netz | beide Subnetze im selben L2-Netz | IPv4 bevorzugt; IPv6 bleibt separat verfuegbar |
 
-`network_uuid` bleibt als Fallback fuer das primaere Zugangsnetz erhalten.
-Netz- und Security-Group-IDs haben keine fremden Projekt-Defaults. Sie muessen
-zum autorisierten OpenStack-Projekt gehoeren. Fuer `dual` muss das IPv4-Netz
+Explizit gewaehlte Netz-IDs haben Vorrang; `network_uuid` bleibt als Fallback
+fuer die primaere Netz-ID erhalten. Ohne ausgewaehlte ID sucht die App das
+IPv6-Zugangsnetz `DHBWV6` bzw. das IPv4-Zugangsnetz `DHBWv4` anhand des Namens
+in der Sichtbarkeit des authentifizierten OpenStack-Projekts. Die Namen lassen
+sich mit `network_v6_name` und `network_v4_name` aendern. Bei nicht vorhandenen
+oder mehrfach gefundenen Namen muss eine eindeutige Projekt-Netz-ID ausgewaehlt
+werden. Es werden keine fremden Projekt-UUIDs als Default verwendet.
+Fuer `dual` muss das IPv4-Netz
 vom primaeren IPv6-Netz verschieden sein und genau ein IPv4-Subnetz besitzen;
 CIDR und Gateway werden daraus ausgelesen. Die nach dem Boot angehaengte IPv4-NIC
-bekommt statische Adressierung und Quellrouting in Tabelle 100. Ihre Default-Route
+bekommt statische Adressierung, die Netzwerk-MTU und Quellrouting in Tabelle 100. Ihre Default-Route
 ersetzt nicht die primaere Route fuer Paketinstallation und IPv6-Zugang.
 
 Jede belegte Gruppe erhaelt ein eigenes L2-Netz ohne Router zu anderen Gruppen.
@@ -36,9 +41,17 @@ statischen Adressen auch im Neutron-Port. Ping/SSH ist nur innerhalb der
 Gruppen-Security-Group freigegeben. Zusaetzliche ICMPv6-Typen 135/136 erlauben
 Neighbour Discovery mit Link-Local-/Multicast-Adressen.
 
-Die Zugangsschnittstellen verwenden `shared_secgroup_id`. Der Betreiber muss
-dort SSH und erforderliches ICMP/ICMPv6 fuer die jeweiligen Familien sowie die
-gewollte Isolation auf dem gemeinsamen Zugangsnetz sicherstellen. Ein isoliertes
+Ohne ausgewaehlte `shared_secgroup_id` erstellt die App eine eigene Zugangs-
+Security-Group fuer SSH (TCP 22), Ping und erforderliches ICMPv6. Egress ist fuer
+beide IP-Familien erlaubt: Das IPv6-Zugangsnetz kann fuer Paketinstallation
+zusaetzlich private NAT-IPv4 verwenden. Die SSH-Quellnetze sind ueber
+`ssh_allowed_cidr_v4`/`ssh_allowed_cidr_v6` einstellbar; Standard ist jeweils
+der gesamte Adressraum, waehrend die tatsächliche Erreichbarkeit vom
+gerouteten Zugangsnetz abhaengt. Wird eine bestehende Security Group ausgewaehlt,
+verwendet die App ausschliesslich diese und veraendert ihre Regeln nicht.
+Sie muss dann selbst SSH und benoetigte Netzwerkfunktionen erlauben.
+Die gewollte Isolation auf dem gemeinsamen Zugangsnetz bleibt eine separate
+Betreiberkonfiguration. Ein isoliertes
 Lab-Netz isoliert nicht automatisch die zusaetzlichen Zugangsschnittstellen.
 Campus/VPN kann erforderlich sein; es wird kein Internetgateway erzeugt.
 
@@ -48,8 +61,10 @@ Campus/VPN kann erforderlich sein; es wird kein Internetgateway erzeugt.
 |---|---|
 | `ip_mode` | `ipv6`; IPv4, IPv6 oder beide |
 | `network_v4_uuid`, `network_v6_uuid` | ausgewaehlte Projekt-Netze |
+| `network_v4_name`, `network_v6_name` | ohne ID: `DHBWv4` bzw. `DHBWV6` |
 | `network_uuid` | optionaler Fallback fuer das primaere Netz |
-| `shared_secgroup_id` | vorhandene Zugangs-Security-Group |
+| `shared_secgroup_id` | optional; leer erzeugt eine eigene Zugangs-Security-Group |
+| `ssh_allowed_cidr_v4`, `ssh_allowed_cidr_v6` | SSH-Quellnetze der automatischen Group, Standard `0.0.0.0/0` / `::/0` |
 | `image_name` | `Ubuntu 24.04` |
 | `flavor` | `gp1.small`, alternativ `gp1.medium` oder `gp1.large` |
 | `disk_size_gb` | `0` = Flavor-Standard; 10-200 = Cinder-Bootvolume je VM |
@@ -82,17 +97,21 @@ python tests/check_cloud_init.py
 CI fuehrt nur diese Pruefungen aus, ohne Cloud-Apply und ohne Cloud-Credentials.
 Die OpenTofu-Tests verwenden Mock-Provider und pruefen alle drei IP-Modi,
 Gruppentrennung, NICs, SSH/ICMP/Neighbour Discovery, Outputs, Bootvolumes und
-ungueltige Eingaben. Der Cloud-init-Test rendert alle drei Modi und prueft
-Netplan-Adressierung, Quellrouting, Konten und die endliche Wartezeit fuer
+ungueltige Eingaben. Separate Regressionen bilden den echten Worker-Payload
+ohne Netz-IDs und ohne Security-Group-ID fuer alle drei IP-Modi nach und pruefen
+explizite Overrides, leere Gruppen sowie falsch adressierte IPv6-Netze.
+Der Cloud-init-Test rendert alle drei Modi und prueft
+Netplan-Adressierung, MTU, Quellrouting, Konten und die endliche Wartezeit fuer
 Hotplug-NICs. Das ist kein Nachweis einer realen Cloud-Verbindung.
 
 Beispiel `tofu/terraform.tfvars` (lokal, nicht committen):
 
 ```hcl
 ip_mode            = "dual"
-network_v4_uuid    = "UUID-des-gerouteten-IPv4-Netzes"
-network_v6_uuid    = "UUID-des-IPv6-Netzes"
-shared_secgroup_id = "UUID-der-Zugangs-Security-Group"
+network_v4_name    = "DHBWv4"
+network_v6_name    = "DHBWV6"
+# Optional: eindeutige Netz-IDs und eine bestehende Zugangs-Group auswaehlen.
+# Ohne shared_secgroup_id wird die SSH-Zugangs-Group automatisch erzeugt.
 users = {
   "Gruppe 1" = [{ email = "alice@example.test" }, { email = "bob@example.test" }]
   "Gruppe 2" = [{ email = "carol@example.test" }]
